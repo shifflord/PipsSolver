@@ -1,6 +1,6 @@
 import random
 
-nil        = "........."
+nil        = "XXXXXXXXX"
 blank      = "|       |"
 dot_l      = "| .     |"
 dot_m      = "|   .   |"
@@ -32,11 +32,7 @@ horizontal_numbers = [[blank, blank, blank],
                       [dots3, blank, dots3]]
 
 
-class PipPlace:
-    def __init__(self, num_pips=None, orientation=None):
-        
-        self.num_pips = num_pips
-        self.orientation = orientation
+# p1 is always the upper/left side
 
 class Domino:
     def __init__(self, p1=None, p2=None, vertical=None):
@@ -55,9 +51,31 @@ class Domino:
         else:
             self.vertical = vertical
 
-class PipGrid:
+    # Rotates clockwise like the game
+    def rotate(self):
+        
+        if self.vertical:
+            placehold = self.p1
+            self.p1 = self.p2
+            self.p2 = placehold
+            self.vertical = False
+        else:
+            self.vertical = True
+
+    
+
+
+        
+
+class FinalBoardSpace:
+    def __init__(self, num_pips=None, orientation=None):
+        
+        self.num_pips = num_pips
+        self.orientation = orientation
+
+class FinalBoard:
     def __init__(self, width, height):
-        self.grid = [[PipPlace() for _ in range(width)] for _ in range(height)]
+        self.grid = [[FinalBoardSpace() for _ in range(width)] for _ in range(height)]
         self.width = width
         self.height = height
 
@@ -133,8 +151,8 @@ class PipGrid:
 
 
 
-new_game = PipGrid(3, 3)
-new_game.add_domino(2, 0, Domino(3, 5, True))
-new_game.add_domino(1, 0, Domino(2, 6, True))
-new_game.add_domino(0, 2, Domino(1, 6, False))
+new_game = FinalBoard(10,10)
+new_game.add_domino(1, 3)
+new_game.add_domino(2, 7)
+new_game.add_domino(3, 4)
 new_game.print_grid()
