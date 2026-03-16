@@ -7,7 +7,7 @@ class Keepout_Rule:
 
         # Invalid placement locations are stored in gameboard array as 7
         for coord in self.mask: 
-            if board[coord[0],coord[1]] is not 7:
+            if board[coord[0],coord[1]] != 7:
                 return False
         return True
 
