@@ -1,7 +1,8 @@
 # Expects an n x 2 array of coordinates on the board which tiles may not be places on
 class Keepout_Rule:
-    def __init__(self, mask):
+    def __init__(self, spaces, mask):
         self.mask = mask
+        self.spaces = spaces
     
     def check_rule(self, board):
 
@@ -28,6 +29,25 @@ class Equals_Rule:
                 return all(x == None or x == num for x in temp_arr)
             
         # All spaces empty
+        return True
+
+# Expects an n x 2 array of coordinates on the board where pips cannot be equal to one another 
+# Assumes None type (unplaced) are valid 
+class Unequal_Rule:
+    def __init__(self, spaces):
+        self.spaces = spaces
+    
+    def check_rule(self, board):
+        temp_arr = []
+        for i in range(len(self.spaces)): 
+            temp_val = board[self.spaces[i][0], self.spaces[i][1]]
+            if (temp_val not in temp_arr) or (temp_val == None):
+                temp_arr.append(temp_val)
+            else:
+                # Repeared value and not None type (unplaced)
+                return False
+              
+        # All spaces empty or unique
         return True
 
 # Check if all pips sum, or can sum, to a value
