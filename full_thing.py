@@ -280,128 +280,188 @@ def solve_pips_mip(domino_list: List[Tuple[int, int]],
         print(f"  {pos}: {int(pulp.value(y[pos]))}")
 
 
-# ====================== DRAWING FUNCTIONS ======================
-def draw_dominos(stdscr, dominos: List[str], selection_grid: List[List[bool]], cursor_x: int, cursor_y: int, DOM_GRID_WIDTH: int, DOM_GRID_HEIGHT: int, BLOCK_W: int, BLOCK_H: int) -> None:
+def is_tile_selected(selection_grid: List[List[bool]], ty: int, tx: int, BLOCK_W: int, BLOCK_H: int) -> bool:
+    """Check if any part of a tile is selected."""
+    for dy in range(BLOCK_H):
+        for dx in range(BLOCK_W):
+            if selection_grid[ty * BLOCK_H + dy][tx * BLOCK_W + dx]:
+                return True
+    return False
+
+
+def cursor_is_visible(start_time: float, last_action_time: float = None, idle_threshold: float = 0.3, blink_period: float = 0.5) -> bool:
+    """Check if cursor should be visible, considering both blink and idle time.
+    
+    Args:
+        start_time: When blinking started
+        last_action_time: When user last moved/highlighted (None = always blink)
+        idle_threshold: Seconds of inactivity before blinking starts (0.3s)
+        blink_period: Length of each blink cycle (0.5s = 0.5s on, 0.5s off)
+    """
+    # If last action is recent, keep cursor solid (visible)
+    if last_action_time is not None:
+        idle_time = time.time() - last_action_time
+        if idle_time < idle_threshold:
+            return True
+    
+    # Otherwise blink normally
+    elapsed = time.time() - start_time
+def is_on_highlighted_border(selection_grid: List[List[bool]], y: int, x: int, tile_width: int, tile_height: int) -> bool:
+    """Check if a cell is on the border of a highlighted tile."""
+    ty = y // tile_height
+    tx = x // tile_width
+    
+    # Check if tile is selected (any cell in tile is True)
+    tile_selected = False
+    for dy in range(tile_height):
+        for dx in range(tile_width):
+            yy = ty * tile_height + dy
+            xx = tx * tile_width + dx
+            if yy < len(selection_grid) and xx < len(selection_grid[yy]) and selection_grid[yy][xx]:
+                tile_selected = True
+                break
+        if tile_selected:
+            break
+    
+    if not tile_selected:
+        return False
+    
+    # Check if (y,x) is on the border of this tile
+    local_y = y % tile_height
+    local_x = x % tile_width
+    return local_y == 0 or local_y == tile_height - 1 or local_x == 0 or local_x == tile_width - 1
+
+
+def draw_dominos(stdscr, dominos: List[str], selection_grid: List[List[bool]], cursor_x: int, cursor_y: int, DOM_GRID_WIDTH: int, DOM_GRID_HEIGHT: int, BLOCK_W: int, BLOCK_H: int, cursor_blink_time: float = None, last_action_time: float = None) -> None:
     """Draw the domino selection grid with highlighting."""
     stdscr.clear()
-    for y in range(DOM_GRID_HEIGHT):
-        for x in range(DOM_GRID_WIDTH):
+    max_y, max_x = stdscr.getmaxyx()
+    show_cursor = True
+    
+    for y in range(min(DOM_GRID_HEIGHT, max_y)):
+        line = []
+        for x in range(min(DOM_GRID_WIDTH, max_x)):
             if y < len(dominos) and x < len(dominos[y]):
                 char = dominos[y][x]
             else:
                 char = " "
+
+            # Check if on cursor border (only edges, not interior)
+            on_cursor_border = (cursor_x <= x < cursor_x + (2 * BLOCK_W) and cursor_y <= y < cursor_y + BLOCK_H) and \
+                               (x == cursor_x or x == cursor_x + (2 * BLOCK_W) - 1 or y == cursor_y or y == cursor_y + BLOCK_H - 1)
+            is_highlighted = y < len(selection_grid) and x < len(selection_grid[y]) and selection_grid[y][x]
+            is_highlighted_border = is_on_highlighted_border(selection_grid, y, x, 2 * BLOCK_W + 1, BLOCK_H)
             
-            # Highlight if inside cursor block or selected
-            if cursor_x <= x < cursor_x + (2 * BLOCK_W) and cursor_y <= y < cursor_y + BLOCK_H:
-                stdscr.addstr(y, x, char, curses.A_REVERSE)
-            elif selection_grid[y][x] if y < len(selection_grid) and x < len(selection_grid[y]) else False:
-                stdscr.addstr(y, x, char, curses.A_REVERSE)
+            # Cursor always visible on border, blinks even over highlighted spaces
+            if on_cursor_border:
+                attr = curses.A_REVERSE if show_cursor else curses.A_BOLD
+            elif is_highlighted and not is_highlighted_border:
+                attr = curses.A_REVERSE  # Only highlight interior of selected spaces
             else:
-                stdscr.addstr(y, x, char)
+                attr = 0
+            
+            line.append((char, attr))
+        
+        # Group consecutive same attr
+        i = 0
+        while i < len(line):
+            j = i
+            while j < len(line) and line[j][1] == line[i][1]:
+                j += 1
+            chs = ''.join(c for c, a in line[i:j])
+            try:
+                if line[i][1]:
+                    stdscr.addstr(y, i, chs, line[i][1])
+                else:
+                    stdscr.addstr(y, i, chs)
+            except curses.error:
+                pass
+            i = j
 
 
 # ====================== GRID MODIFIER FUNCTION ======================
 def modify_grid(grid: List[List[str]], rule: Any, BLOCK_W: int, BLOCK_H: int, GAME_WIDTH: int, GAME_HEIGHT: int) -> None:
-    """Modify grid display to show rule indicators with continuous borders, concave corners, and descriptions."""
-    
-    # Generate rule description and fill pattern
+    """Modify grid display to show rule borders and bottom-right labels."""
+
+    # Draw only border for rule regions; leave interior blank.
     if isinstance(rule, Keepout_Rule):
-        fill_pattern = " "
-        description = "PLAY"
+        description = None
     elif isinstance(rule, Equals_Rule):
-        fill_pattern = "="
-        description = "SAME"
+        description = "="
     elif isinstance(rule, Unequal_Rule):
-        fill_pattern = "!"
-        description = "DIFF"
+        description = "!="
     elif isinstance(rule, Sum_Rule):
-        fill_pattern = f"+{rule.val:02d}"
-        description = f"SUM{rule.val:02d}"
+        description = f"{rule.val}"
     elif isinstance(rule, GreaterThan_Rule):
-        fill_pattern = f">{rule.val:02d}"
-        description = f"GT{rule.val:02d}"
+        description = f">{rule.val}"
     elif isinstance(rule, LessThan_Rule):
-        fill_pattern = f"<{rule.val:02d}"
-        description = f"LT{rule.val:02d}"
+        description = f"<{rule.val}"
     else:
-        fill_pattern = "?"
-        description = "UNKN"
-    
-    # Convert rule spaces to a set for quick lookup
+        description = "?"
     rule_spaces_set = set((ty, tx) for ty, tx in rule.spaces)
-    
-    # Find the bottom-rightmost tile for placing description
+
+    # For bottom-right description location (favor bottom, then rightmost in that row)
     max_ty = max(ty for ty, tx in rule.spaces)
     max_tx = max(tx for ty, tx in rule.spaces if ty == max_ty)
-    desc_grid_y = max_ty * BLOCK_H + BLOCK_H - 1
-    desc_grid_x = max_tx * BLOCK_W + BLOCK_W - len(description)
-    
-    # Fill each tile block
+    desc_y = max_ty * BLOCK_H + BLOCK_H - 2
+    desc_x = max_tx * BLOCK_W + BLOCK_W - len(description) - 1 if description else None
+
+    hborder = [[False] * len(grid[0]) for _ in range(len(grid))]
+    vborder = [[False] * len(grid[0]) for _ in range(len(grid))]
+
     for ty, tx in rule.spaces:
         grid_y = ty * BLOCK_H
         grid_x = tx * BLOCK_W
-        
-        # Check 4 direct neighbors
-        has_neighbor_up = (ty - 1, tx) in rule_spaces_set
-        has_neighbor_down = (ty + 1, tx) in rule_spaces_set
-        has_neighbor_left = (ty, tx - 1) in rule_spaces_set
-        has_neighbor_right = (ty, tx + 1) in rule_spaces_set
-        
-        # Fill the block
+
+        has_up = (ty - 1, tx) in rule_spaces_set
+        has_down = (ty + 1, tx) in rule_spaces_set
+        has_left = (ty, tx - 1) in rule_spaces_set
+        has_right = (ty, tx + 1) in rule_spaces_set
+
         for dy in range(BLOCK_H):
             for dx in range(BLOCK_W):
-                if grid_y + dy >= len(grid) or grid_x + dx >= len(grid[0]):
+                y = grid_y + dy
+                x = grid_x + dx
+                if y >= len(grid) or x >= len(grid[0]):
                     continue
-                
-                # Place description text in bottom-right corner
-                if (ty == max_ty and tx == max_tx and 
-                    grid_y + dy == desc_grid_y and grid_x + dx >= desc_grid_x):
-                    text_idx = (grid_x + dx) - desc_grid_x
-                    if 0 <= text_idx < len(description):
-                        grid[grid_y + dy][grid_x + dx] = description[text_idx]
-                        continue
-                
-                # Position within block
-                is_top = (dy == 0)
-                is_bottom = (dy == BLOCK_H - 1)
-                is_left = (dx == 0)
-                is_right = (dx == BLOCK_W - 1)
-                
-                # Border needs
-                needs_top_border = is_top and not has_neighbor_up
-                needs_bottom_border = is_bottom and not has_neighbor_down
-                needs_left_border = is_left and not has_neighbor_left
-                needs_right_border = is_right and not has_neighbor_right
-                
-                # Detect concave corners (inward pointing) - where borders would turn inward
-                is_concave_top_left = (is_top and is_left and 
-                                       has_neighbor_down and has_neighbor_right and 
-                                       not has_neighbor_up and not has_neighbor_left)
-                is_concave_top_right = (is_top and is_right and 
-                                        has_neighbor_down and has_neighbor_left and 
-                                        not has_neighbor_up and not has_neighbor_right)
-                is_concave_bottom_left = (is_bottom and is_left and 
-                                          has_neighbor_up and has_neighbor_right and 
-                                          not has_neighbor_down and not has_neighbor_left)
-                is_concave_bottom_right = (is_bottom and is_right and 
-                                           has_neighbor_up and has_neighbor_left and 
-                                           not has_neighbor_down and not has_neighbor_right)
-                
-                # Draw character
-                if is_concave_top_left or is_concave_top_right or is_concave_bottom_left or is_concave_bottom_right:
-                    grid[grid_y + dy][grid_x + dx] = "+"
-                elif (needs_top_border or needs_bottom_border) and (needs_left_border or needs_right_border):
-                    grid[grid_y + dy][grid_x + dx] = "+"
-                elif needs_top_border or needs_bottom_border:
-                    grid[grid_y + dy][grid_x + dx] = "-"
-                elif needs_left_border or needs_right_border:
-                    grid[grid_y + dy][grid_x + dx] = "|"
-                else:
-                    # Interior fill
-                    if len(fill_pattern) == 1:
-                        grid[grid_y + dy][grid_x + dx] = fill_pattern
-                    else:
-                        grid[grid_y + dy][grid_x + dx] = fill_pattern[dx % len(fill_pattern)]
+
+                # Clear interior to space
+                grid[y][x] = " "
+
+                is_top = dy == 0
+                is_bottom = dy == BLOCK_H - 1
+                is_left = dx == 0
+                is_right = dx == BLOCK_W - 1
+
+                if is_top and not has_up:
+                    hborder[y][x] = True
+                if is_bottom and not has_down:
+                    hborder[y][x] = True
+                if is_left and not has_left:
+                    vborder[y][x] = True
+                if is_right and not has_right:
+                    vborder[y][x] = True
+
+    # Now stamp final border chars
+    for y in range(len(grid)):
+        for x in range(len(grid[0])):
+            if hborder[y][x] and vborder[y][x]:
+                grid[y][x] = "+"
+            elif hborder[y][x]:
+                grid[y][x] = "-"
+            elif vborder[y][x]:
+                grid[y][x] = "|"
+            else:
+                # retain spaces or previous char
+                grid[y][x] = grid[y][x]
+
+    # Place description text in bottom-right of region (rule only)
+    if description is not None:
+        if desc_y < len(grid):
+            for i, ch in enumerate(description):
+                px = desc_x + i
+                if 0 <= px < len(grid[0]):
+                    grid[desc_y][px] = ch
 
 
 # ====================== CURSES UI (fixed + dynamic size + selection cleared) ======================
@@ -426,15 +486,42 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
     # Step 1: Define playable board area
     while True:
         stdscr.clear()
-        for y in range(GRID_HEIGHT):
-            for x in range(GRID_WIDTH):
+        show_cursor = True
+        
+        max_y, max_x = stdscr.getmaxyx()
+        for y in range(min(GRID_HEIGHT, max_y)):
+            line = []
+            for x in range(min(GRID_WIDTH, max_x)):
                 ch = grid[y][x]
-                if cursor_x <= x < cursor_x + BLOCK_W and cursor_y <= y < cursor_y + BLOCK_H:
-                    stdscr.addstr(y, x, ch, curses.A_REVERSE)
-                elif selection_grid[y][x]:
-                    stdscr.addstr(y, x, ch, curses.A_REVERSE)
+                # Check if on cursor border (only edges, not interior)
+                on_cursor_border = (cursor_x <= x < cursor_x + BLOCK_W and cursor_y <= y < cursor_y + BLOCK_H) and \
+                                   (x == cursor_x or x == cursor_x + BLOCK_W - 1 or y == cursor_y or y == cursor_y + BLOCK_H - 1)
+                is_highlighted = selection_grid[y][x]
+                is_highlighted_border = is_on_highlighted_border(selection_grid, y, x, BLOCK_W, BLOCK_H)
+                
+                # Cursor always visible on border, blinks even over highlighted spaces
+                if on_cursor_border:
+                    attr = curses.A_REVERSE if show_cursor else curses.A_BOLD
+                elif is_highlighted and not is_highlighted_border:
+                    attr = curses.A_REVERSE  # Only highlight interior of selected spaces
                 else:
-                    stdscr.addstr(y, x, ch)
+                    attr = curses.A_BOLD if ch in "-|+" else 0
+                
+                line.append((ch, attr))
+            
+            # Group consecutive same attr
+            i = 0
+            while i < len(line):
+                j = i
+                while j < len(line) and line[j][1] == line[i][1]:
+                    j += 1
+                chs = ''.join(c for c, a in line[i:j])
+                if line[i][1]:
+                    stdscr.addstr(y, i, chs, line[i][1])
+                else:
+                    stdscr.addstr(y, i, chs)
+                i = j
+        
         stdscr.addstr(GRID_HEIGHT + 1, 0, "Step 1: Highlight playable area → press ENTER")
         stdscr.addstr(GRID_HEIGHT + 2, 0, "Arrows | h=highlight | u=unhighlight | ENTER=confirm | q=quit")
         stdscr.refresh()
@@ -477,20 +564,53 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
             raise SystemExit("User quit")
 
     # Step 2: Add regional rules
+    playable_spaces = set((ty, tx) for ty, tx in rules[0].spaces)
+    ruled_spaces = set()  # Track spaces already covered by rules
+    last_message = ""
+    
     while True:
         stdscr.clear()
-        for y in range(GRID_HEIGHT):
-            for x in range(GRID_WIDTH):
+        show_cursor = True
+        
+        max_y, max_x = stdscr.getmaxyx()
+        for y in range(min(GRID_HEIGHT, max_y)):
+            line = []
+            for x in range(min(GRID_WIDTH, max_x)):
                 ch = grid[y][x]
-                if cursor_x <= x < cursor_x + BLOCK_W and cursor_y <= y < cursor_y + BLOCK_H:
-                    stdscr.addstr(y, x, ch, curses.A_REVERSE)
-                elif selection_grid[y][x]:
-                    stdscr.addstr(y, x, ch, curses.A_REVERSE)
+                # Check if on cursor border (only edges, not interior)
+                on_cursor_border = (cursor_x <= x < cursor_x + BLOCK_W and cursor_y <= y < cursor_y + BLOCK_H) and \
+                                   (x == cursor_x or x == cursor_x + BLOCK_W - 1 or y == cursor_y or y == cursor_y + BLOCK_H - 1)
+                is_highlighted = selection_grid[y][x]
+                is_highlighted_border = is_on_highlighted_border(selection_grid, y, x, BLOCK_W, BLOCK_H)
+                
+                # Cursor always visible on border, blinks even over highlighted spaces
+                if on_cursor_border:
+                    attr = curses.A_REVERSE if show_cursor else curses.A_BOLD
+                elif is_highlighted and not is_highlighted_border:
+                    attr = curses.A_REVERSE  # Only highlight interior of selected spaces
                 else:
-                    stdscr.addstr(y, x, ch)
+                    attr = curses.A_BOLD if ch in "-|+" else 0
+                
+                line.append((ch, attr))
+            
+            # Group consecutive same attr
+            i = 0
+            while i < len(line):
+                j = i
+                while j < len(line) and line[j][1] == line[i][1]:
+                    j += 1
+                chs = ''.join(c for c, a in line[i:j])
+                if line[i][1]:
+                    stdscr.addstr(y, i, chs, line[i][1])
+                else:
+                    stdscr.addstr(y, i, chs)
+                i = j
+        
         stdscr.addstr(GRID_HEIGHT + 1, 0, "Step 2: Highlight region → type rule")
         stdscr.addstr(GRID_HEIGHT + 2, 0, "== Equals  != Unequal  +XX Sum  >XX Greater  <XX Less")
         stdscr.addstr(GRID_HEIGHT + 3, 0, "ENTER = finish rules | q = quit")
+        if last_message:
+            stdscr.addstr(GRID_HEIGHT + 4, 0, last_message)
         stdscr.refresh()
 
         key = stdscr.getch()
@@ -505,7 +625,10 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
         elif key == ord("h"):
             for y in range(cursor_y, cursor_y + BLOCK_H):
                 for x in range(cursor_x, cursor_x + BLOCK_W):
-                    selection_grid[y][x] = True
+                    # Only allow highlights in playable area and not already ruled
+                    ty, tx = y // BLOCK_H, x // BLOCK_W
+                    if (ty, tx) in playable_spaces and (ty, tx) not in ruled_spaces:
+                        selection_grid[y][x] = True
         elif key == ord("u"):
             for y in range(cursor_y, cursor_y + BLOCK_H):
                 for x in range(cursor_x, cursor_x + BLOCK_W):
@@ -513,18 +636,30 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
         elif key == ord("="):
             if stdscr.getch() == ord("="):
                 spaces = [[ty, tx] for ty in range(GAME_HEIGHT) for tx in range(GAME_WIDTH)
-                          if selection_grid[ty * BLOCK_H][tx * BLOCK_W]]
-                rule = Equals_Rule(spaces)
-                rules.append(rule)
-                modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
-                selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]  # cleared
+                          if is_tile_selected(selection_grid, ty, tx, BLOCK_W, BLOCK_H)]
+                if spaces:  # Only add if something selected
+                    rule = Equals_Rule(spaces)
+                    rules.append(rule)
+                    for space in spaces:
+                        ruled_spaces.add((space[0], space[1]))
+                    modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                    last_message = f"Added == rule to {len(spaces)} tiles"
+                else:
+                    last_message = "No tiles selected for rule"
+                selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]
         elif key == ord("!"):
             if stdscr.getch() == ord("="):
                 spaces = [[ty, tx] for ty in range(GAME_HEIGHT) for tx in range(GAME_WIDTH)
-                          if selection_grid[ty * BLOCK_H][tx * BLOCK_W]]
-                rule = Unequal_Rule(spaces)
-                rules.append(rule)
-                modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                          if is_tile_selected(selection_grid, ty, tx, BLOCK_W, BLOCK_H)]
+                if spaces:
+                    rule = Unequal_Rule(spaces)
+                    rules.append(rule)
+                    for space in spaces:
+                        ruled_spaces.add((space[0], space[1]))
+                    modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                    last_message = f"Added != rule to {len(spaces)} tiles"
+                else:
+                    last_message = "No tiles selected for rule"
                 selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]
         elif key == ord("+"):
             k2 = stdscr.getch()
@@ -532,10 +667,16 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
             if 48 <= k2 <= 57 and 48 <= k3 <= 57:
                 val = (k2 - 48) * 10 + (k3 - 48)
                 spaces = [[ty, tx] for ty in range(GAME_HEIGHT) for tx in range(GAME_WIDTH)
-                          if selection_grid[ty * BLOCK_H][tx * BLOCK_W]]
-                rule = Sum_Rule(spaces, val)
-                rules.append(rule)
-                modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                          if is_tile_selected(selection_grid, ty, tx, BLOCK_W, BLOCK_H)]
+                if spaces:
+                    rule = Sum_Rule(spaces, val)
+                    rules.append(rule)
+                    for space in spaces:
+                        ruled_spaces.add((space[0], space[1]))
+                    modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                    last_message = f"Added +{val} rule to {len(spaces)} tiles"
+                else:
+                    last_message = "No tiles selected for rule"
                 selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]
         elif key == ord(">"):
             k2 = stdscr.getch()
@@ -543,10 +684,16 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
             if 48 <= k2 <= 57 and 48 <= k3 <= 57:
                 val = (k2 - 48) * 10 + (k3 - 48)
                 spaces = [[ty, tx] for ty in range(GAME_HEIGHT) for tx in range(GAME_WIDTH)
-                          if selection_grid[ty * BLOCK_H][tx * BLOCK_W]]
-                rule = GreaterThan_Rule(spaces, val)
-                rules.append(rule)
-                modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                          if is_tile_selected(selection_grid, ty, tx, BLOCK_W, BLOCK_H)]
+                if spaces:
+                    rule = GreaterThan_Rule(spaces, val)
+                    rules.append(rule)
+                    for space in spaces:
+                        ruled_spaces.add((space[0], space[1]))
+                    modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                    last_message = f"Added >{val} rule to {len(spaces)} tiles"
+                else:
+                    last_message = "No tiles selected for rule"
                 selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]
         elif key == ord("<"):
             k2 = stdscr.getch()
@@ -554,10 +701,16 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
             if 48 <= k2 <= 57 and 48 <= k3 <= 57:
                 val = (k2 - 48) * 10 + (k3 - 48)
                 spaces = [[ty, tx] for ty in range(GAME_HEIGHT) for tx in range(GAME_WIDTH)
-                          if selection_grid[ty * BLOCK_H][tx * BLOCK_W]]
-                rule = LessThan_Rule(spaces, val)
-                rules.append(rule)
-                modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                          if is_tile_selected(selection_grid, ty, tx, BLOCK_W, BLOCK_H)]
+                if spaces:
+                    rule = LessThan_Rule(spaces, val)
+                    rules.append(rule)
+                    for space in spaces:
+                        ruled_spaces.add((space[0], space[1]))
+                    modify_grid(grid, rule, BLOCK_W, BLOCK_H, GAME_WIDTH, GAME_HEIGHT)
+                    last_message = f"Added <{val} rule to {len(spaces)} tiles"
+                else:
+                    last_message = "No tiles selected for rule"
                 selection_grid = [[False] * GRID_WIDTH for _ in range(GRID_HEIGHT)]
         elif key == ord("\n"):
             break
@@ -612,14 +765,13 @@ def UI(stdscr, game_arr: List[List[int]]) -> Tuple[List[Any], List]:
     cursor_y = 0
 
     while True:
-        draw_dominos(stdscr, dominos, selection_grid_dominos, cursor_x, cursor_y, DOM_GRID_WIDTH, DOM_GRID_HEIGHT, BLOCK_W, BLOCK_H)
+        draw_dominos(stdscr, dominos, selection_grid_dominos, cursor_x, cursor_y, DOM_GRID_WIDTH, DOM_GRID_HEIGHT, BLOCK_W, BLOCK_H, None, None)
         stdscr.addstr(DOM_GRID_HEIGHT + 1, 0, "Step 3: Select dominos → press 'a' to add")
         stdscr.addstr(DOM_GRID_HEIGHT + 2, 0, "Arrows move | h=highlight | u=unhighlight | a=add | ENTER=finish | q=quit")
         stdscr.addstr(DOM_GRID_HEIGHT + 3, 0, f"Dominos added: {len(domino_list)} / {len(rules[0].spaces) // 2}")
         stdscr.refresh()
 
         key = stdscr.getch()
-
         if key == curses.KEY_RIGHT:
             cursor_x = min(DOM_GRID_WIDTH - (2 * BLOCK_W), cursor_x + (2 * BLOCK_W) + 1)
         elif key == curses.KEY_LEFT:
